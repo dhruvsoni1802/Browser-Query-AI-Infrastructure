@@ -4,13 +4,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/dhruvsoni1802/browser-query-ai/internal/browser"
-	"github.com/dhruvsoni1802/browser-query-ai/internal/cdp"
 	"github.com/dhruvsoni1802/browser-query-ai/internal/config"
+	"github.com/dhruvsoni1802/browser-query-ai/internal/session"
 )
 
 func main() {
@@ -31,14 +30,13 @@ func main() {
 		"max_browsers", cfg.MaxBrowsers,
 	)
 
-	// Create browser process
+	// Create and start browser process
 	proc, err := browser.NewProcess(cfg.ChromiumPath)
 	if err != nil {
 		slog.Error("failed to create browser process", "error", err)
 		os.Exit(1)
 	}
 
-	// Start the browser
 	if err := proc.Start(); err != nil {
 		slog.Error("failed to start browser", "error", err)
 		os.Exit(1)
@@ -47,69 +45,60 @@ func main() {
 	slog.Info("browser process started",
 		"pid", proc.GetPID(),
 		"debug_port", proc.DebugPort,
-		"debug_url", proc.GetDebugURL(),
-		"status", proc.Status,
 	)
 
-	// Give browser time to initialize
+	// Wait for browser to initialize
 	time.Sleep(2 * time.Second)
 
-	wsURL, err := cdp.GetWebSocketURL("localhost", strconv.Itoa(proc.DebugPort))
+	// Create session manager
+	manager := session.NewManager()
+	defer manager.Close()
+
+	slog.Info("session manager initialized")
+
+	// Demo: Create a session
+	slog.Info("creating demo session")
+	sess, err := manager.CreateSession(proc.DebugPort)
 	if err != nil {
-    slog.Error("failed to get WebSocket URL", "error", err)
-    proc.Stop()
-    os.Exit(1)
-	}
-
-	// Log the WebSocket URL
-	slog.Info("discovered WebSocket URL", "url", wsURL)
-
-	// Create a new CDP client
-	client := cdp.NewClient(wsURL)
-
-	// Connect CDP client to browser
-	if err := client.Connect(); err != nil {
-		slog.Error("failed to connect to CDP client", "error", err)
+		slog.Error("failed to create session", "error", err)
 		proc.Stop()
 		os.Exit(1)
 	}
 
-	slog.Info("CDP client connected successfully")
-
-	// Test sending a simple CDP command
-	slog.Info("testing CDP command - getting browser version")
-	result, err := client.SendCommand("Browser.getVersion", nil)
-	if err != nil {
-			slog.Error("failed to get browser version", "error", err)
-	} else {
-			slog.Info("browser version received", "result", string(result))
-	}
+	slog.Info("demo session created",
+		"session_id", sess.ID,
+		"context_id", sess.ContextID,
+		"status", sess.Status,
+	)
 
 	// Setup graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	slog.Info("service ready", "status", "awaiting shutdown signal")
+	slog.Info("service ready",
+		"active_sessions", manager.GetSessionCount(),
+		"status", "press Ctrl+C to shutdown",
+	)
 
 	// Wait for shutdown signal
 	sig := <-quit
 	slog.Info("shutdown initiated", "signal", sig.String())
 
-	// Close the CDP client
-	if err := client.Close(); err != nil {
-		slog.Error("failed to close CDP client", "error", err)
+	// Cleanup demo session
+	slog.Info("cleaning up sessions")
+	if err := manager.DestroySession(sess.ID); err != nil {
+		slog.Error("failed to destroy session", "error", err)
 	}
 
-	// Stop the browser
+	// Stop browser
 	if err := proc.Stop(); err != nil {
 		slog.Error("failed to stop browser", "error", err)
-		os.Exit(1)
 	}
 
-	// Get port pool stats
+	// Get port stats
 	total, available := browser.GetPoolStats()
-	slog.Info("shutdown complete", 
-		"ports_total", total, 
+	slog.Info("shutdown complete",
+		"ports_total", total,
 		"ports_available", available,
 	)
 }
