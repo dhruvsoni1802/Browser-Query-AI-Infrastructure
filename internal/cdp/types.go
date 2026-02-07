@@ -7,6 +7,7 @@ type Command struct {
 	ID     int                    `json:"id"`
 	Method string                 `json:"method"`
 	Params map[string]interface{} `json:"params,omitempty"`
+	SessionID string               `json:"sessionId,omitempty"`
 }
 
 // Response represents a CDP response from the browser

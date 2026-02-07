@@ -27,6 +27,7 @@ type Client struct {
 	conn       *websocket.Conn         // WebSocket connection
 	requestID  int                     // Counter for generating unique request IDs
 	pending    map[int]chan *Response  // Pending requests waiting for responses
+	targetSessions map[string]string   // Target ID → Session ID ( CDP Session )
 	mu         sync.Mutex              // Protects requestID and pending map
 	ctx        context.Context         // Context for cancellation
 	cancel     context.CancelFunc      // Cancel function
@@ -45,6 +46,7 @@ func NewClient(wsURL string) *Client {
 		conn: nil,
 		requestID: 0,
 		pending: make(map[int]chan *Response),
+		targetSessions: make(map[string]string),
 		ctx: ctx,
 		cancel: cancel,
 		closeOnce: sync.Once{},
@@ -189,4 +191,128 @@ func (c *Client) Close() error {
 	})
 	
 	return err
+}
+
+// AttachToTarget attaches to a target and returns CDP sessionId
+func (c *Client) AttachToTarget(targetID string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Check if already attached
+	if sessionID, exists := c.targetSessions[targetID]; exists {
+			return sessionID, nil
+	}
+
+	// Attach to target
+	params := map[string]interface{}{
+			"targetId": targetID,
+			"flatten":  true,
+	}
+
+	result, err := c.SendCommand("Target.attachToTarget", params)
+	if err != nil {
+			return "", fmt.Errorf("failed to attach to target: %w", err)
+	}
+
+	// Parse sessionId
+	var response struct {
+			SessionID string `json:"sessionId"`
+	}
+
+	if err := json.Unmarshal(result, &response); err != nil {
+			return "", fmt.Errorf("failed to parse attach response: %w", err)
+	}
+
+	// Store session mapping
+	c.targetSessions[targetID] = response.SessionID
+
+	return response.SessionID, nil
+}
+
+// SendCommandToTarget sends a command to a specific target (page)
+func (c *Client) SendCommandToTarget(targetID, method string, params map[string]interface{}) (json.RawMessage, error) {
+	c.mu.Lock()
+	
+	// Check if we already have a session for this target
+	sessionID, exists := c.targetSessions[targetID]
+	
+	if !exists {
+		// Need to attach to target first
+		c.mu.Unlock() // Unlock before recursive call
+		
+		attachParams := map[string]interface{}{
+			"targetId": targetID,
+			"flatten":  true,
+		}
+		
+		result, err := c.SendCommand("Target.attachToTarget", attachParams)
+		if err != nil {
+			return nil, fmt.Errorf("failed to attach to target: %w", err)
+		}
+		
+		var attachResp struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal(result, &attachResp); err != nil {
+			return nil, fmt.Errorf("failed to parse attach response: %w", err)
+		}
+		
+		// Store the session
+		c.mu.Lock()
+		c.targetSessions[targetID] = attachResp.SessionID
+		sessionID = attachResp.SessionID
+	}
+	
+	// Now send command with sessionId
+	c.requestID++
+	id := c.requestID
+	responseChan := make(chan *Response, 1)
+	c.pending[id] = responseChan
+	c.mu.Unlock()
+
+	// Build command with sessionId
+	command := Command{
+		ID:        id,
+		Method:    method,
+		Params:    params,
+		SessionID: sessionID,
+	}
+
+	// Marshal to JSON
+	data, err := json.Marshal(command)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal command: %w", err)
+	}
+
+	// Send over WebSocket
+	slog.Debug("sending CDP command to target", 
+		"method", method, 
+		"target", targetID, 
+		"session", sessionID, 
+		"id", id)
+		
+	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Wait for response with timeout
+	select {
+	case response := <-responseChan:
+		if response.Error != nil {
+			return nil, fmt.Errorf("CDP error: %s (code %d)", response.Error.Message, response.Error.Code)
+		}
+		return response.Result, nil
+
+	case <-time.After(30 * time.Second):
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("command timeout after 30 seconds")
+
+	case <-c.ctx.Done():
+		return nil, fmt.Errorf("client closed")
+	}
 }
