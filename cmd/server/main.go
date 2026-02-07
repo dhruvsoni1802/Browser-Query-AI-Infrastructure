@@ -4,9 +4,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/dhruvsoni1802/browser-query-ai/internal/browser"
+	"github.com/dhruvsoni1802/browser-query-ai/internal/cdp"
 	"github.com/dhruvsoni1802/browser-query-ai/internal/config"
 )
 
@@ -47,6 +50,19 @@ func main() {
 		"debug_url", proc.GetDebugURL(),
 		"status", proc.Status,
 	)
+
+	// Give browser time to initialize
+	time.Sleep(2 * time.Second)
+
+	wsURL, err := cdp.GetWebSocketURL("localhost", strconv.Itoa(proc.DebugPort))
+	if err != nil {
+    slog.Error("failed to get WebSocket URL", "error", err)
+    proc.Stop()
+    os.Exit(1)
+	}
+
+	// Log the WebSocket URL
+	slog.Info("discovered WebSocket URL", "url", wsURL)
 
 	// Setup graceful shutdown
 	quit := make(chan os.Signal, 1)
