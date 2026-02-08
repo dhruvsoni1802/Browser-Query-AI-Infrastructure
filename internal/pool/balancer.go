@@ -71,3 +71,13 @@ func (lb *LoadBalancer) GetPort() (int, error) {
 	}
 	return process.GetPort(), nil
 }
+
+// GetProcesses returns all processes from the pool
+func (lb *LoadBalancer) GetProcesses() []*ManagedProcess {
+	return lb.pool.GetProcesses()
+}
+
+// GetMetrics returns metrics for the entire pool
+func (lb *LoadBalancer) GetMetrics() PoolMetrics {
+	return lb.pool.GetMetrics()
+}
