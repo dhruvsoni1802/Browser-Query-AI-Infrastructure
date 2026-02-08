@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/dhruvsoni1802/browser-query-ai/internal/pool"
 	"github.com/dhruvsoni1802/browser-query-ai/internal/session"
 	"github.com/go-chi/chi/v5"
 )
@@ -12,31 +13,27 @@ import (
 // Handlers contains HTTP handlers for the API
 type Handlers struct {
 	sessionManager *session.Manager
-	browserPort    int // For now, single browser port (later: load balancer decides)
+	loadBalancer   *pool.LoadBalancer
 }
 
 // NewHandlers creates a new Handlers instance
-func NewHandlers(manager *session.Manager, port int) *Handlers {
+func NewHandlers(manager *session.Manager, loadBalancer *pool.LoadBalancer) *Handlers {
 	return &Handlers{
 		sessionManager: manager,
-		browserPort:    port,
+		loadBalancer:   loadBalancer,
 	}
 }
 
 // CreateSession handles POST /sessions
 func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
-	// Parse request body (optional port override)
-	var req CreateSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Empty body is OK, just use default port
-		req.BrowserPort = h.browserPort
+	// Use load balancer to select best process
+	process, err := h.loadBalancer.SelectProcess()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, ErrCodeInternalError, "No available browser processes: "+err.Error())
+		return
 	}
 
-	// Use provided port or default
-	port := req.BrowserPort
-	if port == 0 {
-		port = h.browserPort
-	}
+	port := process.GetPort()
 
 	// Create session via session manager
 	sess, err := h.sessionManager.CreateSession(port)
@@ -44,6 +41,9 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, ErrCodeSessionCreateFailed, err.Error())
 		return
 	}
+
+	// Increment session count on the selected process
+	process.IncrementSessionCount()
 
 	// Build response
 	response := CreateSessionResponse{
@@ -56,19 +56,47 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, response)
 }
 
-// GetSession handles GET /sessions/{id}
-func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from URL parameter
+// DestroySession handles DELETE /sessions/{id}
+func (h *Handlers) DestroySession(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "id")
 
-	// Get session from manager
+	// Get session first to know which process it's on
 	sess, err := h.sessionManager.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, ErrCodeSessionNotFound, err.Error())
 		return
 	}
 
-	// Build response
+	// Destroy session
+	if err := h.sessionManager.DestroySession(sessionID); err != nil {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+		return
+	}
+
+	// Decrement session count on the process
+	// Find the process by port
+	processes := h.loadBalancer.GetProcesses()
+	for _, process := range processes {
+		if process.GetPort() == sess.ProcessPort {
+			process.DecrementSessionCount()
+			break
+		}
+	}
+
+	// Return 204 No Content
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetSession handles GET /sessions/{id}
+func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "id")
+
+	sess, err := h.sessionManager.GetSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeSessionNotFound, err.Error())
+		return
+	}
+
 	response := GetSessionResponse{
 		SessionID:    sess.ID,
 		ContextID:    sess.ContextID,
@@ -84,10 +112,8 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 
 // ListSessions handles GET /sessions
 func (h *Handlers) ListSessions(w http.ResponseWriter, r *http.Request) {
-	// Get all sessions from manager
 	sessions := h.sessionManager.ListSessions()
 
-	// Convert to API response format
 	sessionInfos := make([]SessionInfo, 0, len(sessions))
 	for _, sess := range sessions {
 		sessionInfos = append(sessionInfos, SessionInfo{
@@ -108,46 +134,23 @@ func (h *Handlers) ListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// DestroySession handles DELETE /sessions/{id}
-func (h *Handlers) DestroySession(w http.ResponseWriter, r *http.Request) {
-	sessionID := chi.URLParam(r, "id")
-
-	// Destroy session
-	if err := h.sessionManager.DestroySession(sessionID); err != nil {
-		// Check if it's a "not found" error
-		if err.Error() == "session not found: "+sessionID {
-			writeError(w, http.StatusNotFound, ErrCodeSessionNotFound, err.Error())
-		} else {
-			writeError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
-		}
-		return
-	}
-
-	// Return 204 No Content (success, no body)
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // Navigate handles POST /sessions/{id}/navigate
 func (h *Handlers) Navigate(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "id")
 
-	// Parse request body
 	var req NavigateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "Invalid JSON body")
 		return
 	}
 
-	// Validate URL is provided
 	if req.URL == "" {
 		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "URL is required")
 		return
 	}
 
-	// Navigate via session manager
 	pageID, err := h.sessionManager.Navigate(sessionID, req.URL)
 	if err != nil {
-		// Check if session not found
 		if err.Error() == "failed to get session: session not found: "+sessionID {
 			writeError(w, http.StatusNotFound, ErrCodeSessionNotFound, "Session not found")
 		} else {
@@ -156,7 +159,6 @@ func (h *Handlers) Navigate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build response
 	response := NavigateResponse{
 		SessionID: sessionID,
 		PageID:    pageID,
@@ -170,14 +172,12 @@ func (h *Handlers) Navigate(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) ExecuteJS(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "id")
 
-	// Parse request body
 	var req ExecuteJSRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "Invalid JSON body")
 		return
 	}
 
-	// Validate required fields
 	if req.PageID == "" {
 		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "page_id is required")
 		return
@@ -187,7 +187,6 @@ func (h *Handlers) ExecuteJS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Execute JavaScript via session manager
 	result, err := h.sessionManager.ExecuteJavascript(sessionID, req.PageID, req.Script)
 	if err != nil {
 		if err.Error() == "failed to get session: session not found: "+sessionID {
@@ -200,7 +199,6 @@ func (h *Handlers) ExecuteJS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build response
 	response := ExecuteJSResponse{
 		SessionID: sessionID,
 		PageID:    req.PageID,
@@ -214,20 +212,17 @@ func (h *Handlers) ExecuteJS(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) CaptureScreenshot(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "id")
 
-	// Parse request body
 	var req ScreenshotRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "Invalid JSON body")
 		return
 	}
 
-	// Validate page_id
 	if req.PageID == "" {
 		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "page_id is required")
 		return
 	}
 
-	// Capture screenshot via session manager
 	screenshotBytes, err := h.sessionManager.CaptureScreenshot(sessionID, req.PageID)
 	if err != nil {
 		if err.Error() == "failed to get session: session not found: "+sessionID {
@@ -240,10 +235,8 @@ func (h *Handlers) CaptureScreenshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Encode to base64
 	encoded := base64.StdEncoding.EncodeToString(screenshotBytes)
 
-	// Build response
 	format := req.Format
 	if format == "" {
 		format = "png"
@@ -265,7 +258,6 @@ func (h *Handlers) GetPageContent(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "id")
 	pageID := chi.URLParam(r, "pageId")
 
-	// Get page content via session manager
 	content, err := h.sessionManager.GetPageContent(sessionID, pageID)
 	if err != nil {
 		if err.Error() == "failed to get session: session not found: "+sessionID {
@@ -278,7 +270,6 @@ func (h *Handlers) GetPageContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build response
 	response := GetPageContentResponse{
 		SessionID: sessionID,
 		PageID:    pageID,
@@ -294,7 +285,6 @@ func (h *Handlers) ClosePage(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "id")
 	pageID := chi.URLParam(r, "pageId")
 
-	// Close page via session manager
 	if err := h.sessionManager.ClosePage(sessionID, pageID); err != nil {
 		if err.Error() == "failed to get session: session not found: "+sessionID {
 			writeError(w, http.StatusNotFound, ErrCodeSessionNotFound, "Session not found")
@@ -306,6 +296,5 @@ func (h *Handlers) ClosePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return 204 No Content
 	w.WriteHeader(http.StatusNoContent)
 }

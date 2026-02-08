@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dhruvsoni1802/browser-query-ai/internal/pool"
 	"github.com/dhruvsoni1802/browser-query-ai/internal/session"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -21,58 +22,52 @@ type Server struct {
 }
 
 // NewServer creates a new HTTP server
-// 
-// NOTE: browserPort is temporary for single-browser setup.
-// TODO: Replace with LoadBalancer when implementing process pool.
-func NewServer(port string, manager *session.Manager, browserPort int) *Server {
-	// Create chi router
+func NewServer(port string, manager *session.Manager, loadBalancer *pool.LoadBalancer) *Server {
 	router := chi.NewRouter()
 
-	// Add middleware (order matters!)
-	router.Use(RecoveryMiddleware)   // 1. Catch panics
-	router.Use(LoggingMiddleware)    // 2. Log requests
-	router.Use(middleware.RequestID) // 3. Add request IDs
-
-	// CORS middleware
+	// Middleware
+	router.Use(RecoveryMiddleware)
+	router.Use(LoggingMiddleware)
+	router.Use(middleware.RequestID)
 	router.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"}, // Allow all origins (dev only)
+		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: false,
-		MaxAge:           300, // Cache preflight for 5 minutes
+		MaxAge:           300,
 	}))
 
-	// Create handlers
-	handlers := NewHandlers(manager, browserPort)
+	// Create handlers with load balancer
+	handlers := NewHandlers(manager, loadBalancer)
 
-	// Register routes
+	// Register routes (same as before)
 	router.Route("/sessions", func(r chi.Router) {
-		// Session CRUD
-		r.Post("/", handlers.CreateSession)   // POST /sessions
-		r.Get("/", handlers.ListSessions)     // GET /sessions
+		r.Post("/", handlers.CreateSession)
+		r.Get("/", handlers.ListSessions)
 
-		// Individual session routes
 		r.Route("/{id}", func(r chi.Router) {
-			r.Get("/", handlers.GetSession)       // GET /sessions/{id}
-			r.Delete("/", handlers.DestroySession) // DELETE /sessions/{id}
+			r.Get("/", handlers.GetSession)
+			r.Delete("/", handlers.DestroySession)
+			r.Post("/navigate", handlers.Navigate)
+			r.Post("/execute", handlers.ExecuteJS)
+			r.Post("/screenshot", handlers.CaptureScreenshot)
 
-			// Session operations (pageID in request body)
-			r.Post("/navigate", handlers.Navigate)           // POST /sessions/{id}/navigate
-			r.Post("/execute", handlers.ExecuteJS)           // POST /sessions/{id}/execute
-			r.Post("/screenshot", handlers.CaptureScreenshot) // POST /sessions/{id}/screenshot
-
-			// Page-specific routes (pageID in URL)
 			r.Route("/pages/{pageId}", func(r chi.Router) {
-				r.Get("/content", handlers.GetPageContent) // GET /sessions/{id}/pages/{pageId}/content
-				r.Delete("/", handlers.ClosePage)          // DELETE /sessions/{id}/pages/{pageId}
+				r.Get("/content", handlers.GetPageContent)
+				r.Delete("/", handlers.ClosePage)
 			})
 		})
 	})
 
-	// Create HTTP server
+	// Add metrics endpoint
+	router.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		metrics := loadBalancer.GetMetrics()
+		writeJSON(w, http.StatusOK, metrics)
+	})
+
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%s", port),
+		Addr:         ":" + port,
 		Handler:      router,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
