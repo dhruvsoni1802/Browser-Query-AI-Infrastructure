@@ -20,7 +20,7 @@ func setupTestBrowser(t *testing.T) (*browser.Process, func()) {
 
 	// Create and start browser
 	proc, err := browser.NewProcess(cfg.ChromiumPath)
-	if err != nil {
+	if err != nil {	
 		t.Fatalf("failed to create browser process: %v", err)
 	}
 
@@ -43,7 +43,7 @@ func setupTestBrowser(t *testing.T) (*browser.Process, func()) {
 
 // TestNewManager tests manager creation
 func TestNewManager(t *testing.T) {
-	manager := NewManager()
+	manager := NewManager(nil)
 
 	// Check that manager is properly initialized
 	if manager == nil {
@@ -104,7 +104,7 @@ func TestCreateSession(t *testing.T) {
 	defer cleanup()
 
 	// Create manager
-	manager := NewManager()
+	manager := NewManager(nil)
 	defer manager.Close()
 
 	// Create session
@@ -151,7 +151,7 @@ func TestGetSession(t *testing.T) {
 	proc, cleanup := setupTestBrowser(t)
 	defer cleanup()
 
-	manager := NewManager()
+	manager := NewManager(nil)
 	defer manager.Close()
 
 	// Create session
@@ -187,7 +187,7 @@ func TestDestroySession(t *testing.T) {
 	proc, cleanup := setupTestBrowser(t)
 	defer cleanup()
 
-	manager := NewManager()
+	manager := NewManager(nil)
 	defer manager.Close()
 
 	// Create session
@@ -231,7 +231,7 @@ func TestListSessions(t *testing.T) {
 	proc, cleanup := setupTestBrowser(t)
 	defer cleanup()
 
-	manager := NewManager()
+	manager := NewManager(nil)
 	defer manager.Close()
 
 	// Initially should be empty
@@ -274,7 +274,7 @@ func TestCDPClientPooling(t *testing.T) {
 	proc, cleanup := setupTestBrowser(t)
 	defer cleanup()
 
-	manager := NewManager()
+	manager := NewManager(nil)
 	defer manager.Close()
 
 	// Create first session
@@ -311,7 +311,7 @@ func TestConcurrentSessionCreation(t *testing.T) {
 	proc, cleanup := setupTestBrowser(t)
 	defer cleanup()
 
-	manager := NewManager()
+	manager := NewManager(nil)
 	defer manager.Close()
 
 	// Create sessions concurrently
@@ -360,7 +360,7 @@ func TestSessionActivityTracking(t *testing.T) {
 	proc, cleanup := setupTestBrowser(t)
 	defer cleanup()
 
-	manager := NewManager()
+	manager := NewManager(nil)
 	defer manager.Close()
 
 	// Create session

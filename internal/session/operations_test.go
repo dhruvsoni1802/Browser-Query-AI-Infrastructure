@@ -17,7 +17,7 @@ func setupTestManager(t *testing.T) (*browser.Process, *Manager, func()) {
 	// Load config
 	cfg, err := config.Load()
 	if err != nil {
-		t.Fatalf("failed to load config: %v", err)
+		t.Fatalf("failed to load config: %v", err)	
 	}
 
 	// Create and start browser
@@ -34,7 +34,7 @@ func setupTestManager(t *testing.T) (*browser.Process, *Manager, func()) {
 	time.Sleep(2 * time.Second)
 
 	// Create manager
-	manager := NewManager()
+	manager := NewManager(nil)
 
 	// Cleanup function
 	cleanup := func() {

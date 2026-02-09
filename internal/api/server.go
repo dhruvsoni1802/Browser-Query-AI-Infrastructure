@@ -45,6 +45,7 @@ func NewServer(port string, manager *session.Manager, loadBalancer *pool.LoadBal
 	router.Route("/sessions", func(r chi.Router) {
 		r.Post("/", handlers.CreateSession)
 		r.Get("/", handlers.ListSessions)
+		r.Post("/resume", handlers.ResumeSession)
 
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/", handlers.GetSession)
@@ -52,12 +53,19 @@ func NewServer(port string, manager *session.Manager, loadBalancer *pool.LoadBal
 			r.Post("/navigate", handlers.Navigate)
 			r.Post("/execute", handlers.ExecuteJS)
 			r.Post("/screenshot", handlers.CaptureScreenshot)
+			r.Post("/resume", handlers.ResumeSessionByID)
+			r.Put("/rename", handlers.RenameSession)
 
 			r.Route("/pages/{pageId}", func(r chi.Router) {
 				r.Get("/content", handlers.GetPageContent)
 				r.Delete("/", handlers.ClosePage)
 			})
 		})
+	})
+
+	// Agent routes
+	router.Route("/agents/{agentId}", func(r chi.Router) {
+		r.Get("/sessions", handlers.ListAgentSessions)
 	})
 
 	// Add metrics endpoint

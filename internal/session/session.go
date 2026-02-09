@@ -21,6 +21,8 @@ const (
 // Session represents an AI agent's isolated browsing session
 type Session struct {
 	ID           string          // Unique session identifier
+	Name         string          // Session name
+	AgentID      string          // Agent ID
 	ProcessPort  int             // Which browser process (9222, 9223, etc.)
 	ContextID    string          // CDP browser context ID
 	PageIDs      []string        // List of page IDs in this context

@@ -10,6 +10,8 @@ import (
 
 // CreateSessionRequest for POST /sessions
 type CreateSessionRequest struct {
+	AgentID     string `json:"agent_id" validate:"required"`
+	SessionName string `json:"session_name,omitempty"`
 	// Optional: Allow client to specify port
 	// If not provided, server/load balancer decides
 	BrowserPort int `json:"browser_port,omitempty"`
@@ -38,6 +40,8 @@ type ScreenshotRequest struct {
 // CreateSessionResponse returned when session is created
 type CreateSessionResponse struct {
 	SessionID string `json:"session_id"`
+	SessionName string    `json:"session_name"`
+	AgentID     string    `json:"agent_id"`
 	ContextID string `json:"context_id"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -76,6 +80,8 @@ type GetPageContentResponse struct {
 // GetSessionResponse returned with session details
 type GetSessionResponse struct {
 	SessionID    string                `json:"session_id"`
+	SessionName  string                `json:"session_name"`
+	AgentID      string                `json:"agent_id"`
 	ContextID    string                `json:"context_id"`
 	PageIDs      []string              `json:"page_ids"`
 	PageCount    int                   `json:"page_count"`
@@ -93,6 +99,8 @@ type ListSessionsResponse struct {
 // SessionInfo contains summary information about a session
 type SessionInfo struct {
 	SessionID    string                `json:"session_id"`
+	SessionName  string                `json:"session_name"`
+	AgentID      string                `json:"agent_id"`
 	ContextID    string                `json:"context_id"`
 	PageCount    int                   `json:"page_count"`
 	CreatedAt    time.Time             `json:"created_at"`
@@ -118,6 +126,43 @@ type ErrorDetail struct {
 	Code    string `json:"code"`    // Machine-readable error code
 	Message string `json:"message"` // Human-readable message
 }
+
+// ListAgentSessionsResponse
+type ListAgentSessionsResponse struct {
+	AgentID  string               `json:"agent_id"`
+	Sessions []SessionSummary     `json:"sessions"`
+	Count    int                  `json:"count"`
+}
+
+// SessionSummary contains summary information about a session
+type SessionSummary struct {
+	SessionID    string                `json:"session_id"`
+	SessionName  string                `json:"session_name"`
+	Status       session.SessionStatus `json:"status"`
+	PageCount    int                   `json:"page_count"`
+	CreatedAt    time.Time             `json:"created_at"`
+	LastActivity time.Time             `json:"last_activity"`
+}
+
+// ResumeSessionRequest for POST /sessions/resume
+type ResumeSessionRequest struct {
+	AgentID     string `json:"agent_id" validate:"required"`
+	SessionName string `json:"session_name" validate:"required"`
+}
+
+// ResumeSessionResponse for resuming a session
+type ResumeSessionResponse struct {
+	SessionID   string    `json:"session_id"`
+	SessionName string    `json:"session_name"`
+	Resumed     bool      `json:"resumed"`  // true if existed, false if created new
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// RenameSessionRequest for PUT /sessions/{id}/rename
+type RenameSessionRequest struct {
+	SessionName string `json:"session_name" validate:"required"`
+}
+
 
 // Common error codes
 const (

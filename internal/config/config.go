@@ -5,47 +5,76 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"time"
 )
 
 // Config holds all service configuration
 type Config struct {
+	//Browser configuration
 	ChromiumPath string
 	ServerPort   string
 	MaxBrowsers  int
+
+	//Redis configuration
+	RedisAddr    string
+	RedisPassword string
+	RedisDB      int
+	SessionTTL   time.Duration
 }
 
-// Function to load the configuration
 func Load() (*Config, error) {
-	// Find Chromium binary
 	chromiumPath, err := findChromium()
 	if err != nil {
 		return nil, err
 	}
 
-	// Read SERVER_PORT from environment variable, default to "8080"
-	serverPort := os.Getenv("SERVER_PORT")
-	if serverPort == "" {
-		serverPort = "8080"
-	}
-
-	// Read MAX_BROWSERS from environment variable, default to 5
-	maxBrowsers := os.Getenv("MAX_BROWSERS")
-	if maxBrowsers == "" {
-		maxBrowsers = "5"
-	}
-
-	maxBrowsersInt, err := strconv.Atoi(maxBrowsers)
-	if err != nil {
-		return nil, err
-	}
-
-	// Return the config
 	return &Config{
-		ChromiumPath: chromiumPath,
-		ServerPort:   serverPort,
-		MaxBrowsers:  maxBrowsersInt,
+		ChromiumPath:  chromiumPath,
+		ServerPort:    getEnv("SERVER_PORT", "8080"),
+		MaxBrowsers:   getEnvAsInt("MAX_BROWSERS", 5),
+		
+		// Redis defaults
+		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+		RedisDB:       getEnvAsInt("REDIS_DB", 0),
+		SessionTTL:    getEnvAsDuration("SESSION_TTL", 1*time.Hour),
 	}, nil
 }
+
+func getEnv(key string, defaultVal string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	return val
+}
+
+func getEnvAsInt(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	intVal, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultVal
+	}
+	return intVal
+}
+
+func getEnvAsDuration(key string, defaultVal time.Duration) time.Duration {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	
+	duration, err := time.ParseDuration(val)
+	if err != nil {
+		return defaultVal
+	}
+	
+	return duration
+}
+
 
 // Function to find the Chromium binary path
 func findChromium() (string, error) {

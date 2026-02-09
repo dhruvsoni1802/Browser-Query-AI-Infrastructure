@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dhruvsoni1802/browser-query-ai/internal/cdp"
+	"github.com/dhruvsoni1802/browser-query-ai/internal/storage"
 )
 
 // Manager manages all active sessions and CDP connections
@@ -20,10 +21,15 @@ type Manager struct {
 	mu         sync.RWMutex
 	ctx        context.Context
 	cancel     context.CancelFunc
+	repo       *storage.SessionRepository
+
+	// Session limits
+	maxSessionsPerAgent int 
+	maxTotalSessions    int
 }
 
 // NewManager creates a new session manager
-func NewManager() *Manager {
+func NewManager(repo *storage.SessionRepository) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	
 	return &Manager{
@@ -31,6 +37,9 @@ func NewManager() *Manager {
 		cdpClients: make(map[int]*cdp.Client),
 		ctx:        ctx,
 		cancel:     cancel,
+		repo:        repo,
+		maxSessionsPerAgent: MaxSessionsPerAgent,
+		maxTotalSessions: MaxTotalSessions,
 	}
 }
 
@@ -161,11 +170,23 @@ func (m *Manager) DestroySession(sessionID string) error {
 		return fmt.Errorf("failed to dispose browser context: %w", err)
 	}
 
+	// Delete from Redis (this now handles name cleanup too)
+	if m.repo != nil {
+		if err := m.repo.DeleteSession(sessionID); err != nil {
+			slog.Warn("failed to delete session from Redis", "error", err)
+		}
+	}
+
 	// Mark session as closed
 	session.Status = SessionClosed
 
 	// Remove from map
 	delete(m.sessions, sessionID)
+
+	slog.Info("session destroyed", 
+		"session_id", sessionID,
+		"session_name", session.Name,
+		"agent_id", session.AgentID)
 
 	return nil
 }
@@ -269,4 +290,343 @@ func (m *Manager) cleanupExpiredSessions(timeout time.Duration) {
 			}
 		}
 	}
+}
+
+// CreateSessionWithName creates a new session with optional name and agent ID
+func (m *Manager) CreateSessionWithName(agentID, sessionName string, port int) (*Session, error) {
+	// Validate agent ID is provided
+	if agentID == "" {
+		return nil, fmt.Errorf("agent_id is required")
+	}
+	
+	// Check session limits
+	if err := m.checkSessionLimits(agentID); err != nil {
+		return nil, err
+	}
+	
+	// If name provided, check for conflicts
+	if sessionName != "" && m.repo != nil {
+		exists, err := m.repo.CheckSessionNameExists(agentID, sessionName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check session name: %w", err)
+		}
+		if exists {
+			return nil, ErrSessionNameConflict
+		}
+	}
+	
+	// Create the session (existing logic)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sessionID, err := generateSessionID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate session ID: %w", err)
+	}
+
+	client, err := m.GetOrCreateCDPClient(port)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get or create CDP client: %w", err)
+	}
+
+	contextID, err := client.CreateBrowserContext()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create browser context: %w", err)
+	}
+
+	// Create session with name
+	session := &Session{
+		ID:           sessionID,
+		Name:         sessionName,  // ← ADD (will be auto-generated if empty)
+		AgentID:      agentID,      // ← ADD
+		ProcessPort:  port,
+		ContextID:    contextID,
+		PageIDs:      []string{},
+		CDPClient:    client,
+		CreatedAt:    time.Now(),
+		LastActivity: time.Now(),
+		Status:       SessionActive,
+	}
+
+	// Auto-generate name if not provided
+	if session.Name == "" {
+		session.Name = m.generateSessionName(session)
+	}
+
+	// Add to manager
+	m.sessions[sessionID] = session
+
+	// Persist to Redis
+	if m.repo != nil {
+		state := m.sessionToState(session)
+		if err := m.repo.SaveSession(state); err != nil {
+			slog.Warn("failed to persist session to Redis", "error", err)
+		}
+	}
+
+	slog.Info("session created", 
+		"session_id", session.ID,
+		"session_name", session.Name,
+		"agent_id", agentID,
+		"port", port)
+
+	return session, nil
+}
+
+// Helper: Check if agent is within session limits
+func (m *Manager) checkSessionLimits(agentID string) error {
+	// Check total sessions
+	m.mu.RLock()
+	totalSessions := len(m.sessions)
+	m.mu.RUnlock()
+	
+	if totalSessions >= m.maxTotalSessions {
+		return fmt.Errorf("global session limit reached (%d)", m.maxTotalSessions)
+	}
+	
+	// Check per-agent limit (from Redis)
+	if m.repo != nil {
+		count, err := m.repo.CountAgentSessions(agentID)
+		if err != nil {
+			slog.Warn("failed to count agent sessions", "error", err)
+			// Don't block on Redis error
+			return nil
+		}
+		
+		if count >= m.maxSessionsPerAgent {
+			return fmt.Errorf("%w: agent has %d sessions (max %d)", 
+				ErrSessionLimitReached, count, m.maxSessionsPerAgent)
+		}
+	}
+	
+	return nil
+}
+
+// Helper: Auto-generate session name
+func (m *Manager) generateSessionName(session *Session) string {
+	timestamp := session.CreatedAt.Format("2006-01-02")
+	shortID := session.ID[5:13] // Take 8 chars after "sess_"
+	return fmt.Sprintf("%s-%s-%s", DefaultSessionNamePrefix, timestamp, shortID)
+}
+
+// Helper: Convert Session to SessionState for Redis
+func (m *Manager) sessionToState(s *Session) *storage.SessionState {
+	// Collect page states
+	pages := make([]storage.PageState, len(s.PageIDs))
+	for i, pageID := range s.PageIDs {
+		pages[i] = storage.PageState{
+			PageID: pageID,
+			// URL and Title could be fetched if needed
+		}
+	}
+	
+	return &storage.SessionState{
+		SessionID:    s.ID,
+		SessionName:  s.Name,
+		AgentID:      s.AgentID,
+		ProcessPort:  s.ProcessPort,
+		ContextID:    s.ContextID,
+		CreatedAt:    s.CreatedAt,
+		LastActivity: s.LastActivity,
+		Status:       string(s.Status),
+		Pages:        pages,
+	}
+}
+
+// ResumeSessionByName resumes a session by agent ID and session name
+func (m *Manager) ResumeSessionByName(agentID, sessionName string) (*Session, error) {
+	if agentID == "" || sessionName == "" {
+		return nil, fmt.Errorf("agent_id and session_name are required")
+	}
+	
+	// Look up session ID by name
+	if m.repo == nil {
+		return nil, fmt.Errorf("Redis not configured")
+	}
+	
+	sessionID, err := m.repo.GetSessionByName(agentID, sessionName)
+	if err != nil {
+		return nil, fmt.Errorf("session not found: %w", err)
+	}
+	
+	// Try to get from memory first
+	m.mu.RLock()
+	session, exists := m.sessions[sessionID]
+	m.mu.RUnlock()
+	
+	if exists {
+		// Session already in memory
+		session.UpdateActivity()
+		if m.repo != nil {
+			m.repo.UpdateLastActivity(sessionID)
+		}
+		
+		slog.Info("resumed session from memory", 
+			"session_id", sessionID,
+			"session_name", sessionName,
+			"agent_id", agentID)
+		
+		return session, nil
+	}
+	
+	// Session not in memory - resurrect from Redis
+	state, err := m.repo.GetSession(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load session from Redis: %w", err)
+	}
+	
+	// Resurrect the session
+	session, err = m.resurrectSession(state)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resurrect session: %w", err)
+	}
+	
+	slog.Info("resurrected session from Redis", 
+		"session_id", sessionID,
+		"session_name", sessionName,
+		"agent_id", agentID)
+	
+	return session, nil
+}
+
+// resurrectSession rebuilds a session from Redis state
+func (m *Manager) resurrectSession(state *storage.SessionState) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	// Get or create CDP client for the port
+	client, err := m.GetOrCreateCDPClient(state.ProcessPort)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reconnect to browser: %w", err)
+	}
+	
+	// Recreate session object
+	session := &Session{
+		ID:           state.SessionID,
+		Name:         state.SessionName,
+		AgentID:      state.AgentID,
+		ProcessPort:  state.ProcessPort,
+		ContextID:    state.ContextID,
+		PageIDs:      []string{},
+		CDPClient:    client,
+		CreatedAt:    state.CreatedAt,
+		LastActivity: time.Now(),
+		Status:       SessionStatus(state.Status),
+	}
+	
+	// Restore pages
+	for _, pageState := range state.Pages {
+		session.PageIDs = append(session.PageIDs, pageState.PageID)
+	}
+	
+	// Add to manager
+	m.sessions[session.ID] = session
+	
+	// Update last activity in Redis
+	if m.repo != nil {
+		m.repo.UpdateLastActivity(session.ID)
+	}
+	
+	return session, nil
+}
+
+// ListAgentSessions returns all sessions for an agent
+func (m *Manager) ListAgentSessions(agentID string) ([]*Session, error) {
+	if agentID == "" {
+		return nil, fmt.Errorf("agent_id is required")
+	}
+	
+	if m.repo == nil {
+		// No Redis - return only in-memory sessions for this agent
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		
+		sessions := make([]*Session, 0)
+		for _, session := range m.sessions {
+			if session.AgentID == agentID {
+				sessions = append(sessions, session)
+			}
+		}
+		return sessions, nil
+	}
+	
+	// Get from Redis
+	states, err := m.repo.ListAgentSessions(agentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent sessions: %w", err)
+	}
+	
+	// Convert to Session objects
+	sessions := make([]*Session, 0, len(states))
+	for _, state := range states {
+		// Check if already in memory
+		m.mu.RLock()
+		session, exists := m.sessions[state.SessionID]
+		m.mu.RUnlock()
+		
+		if exists {
+			sessions = append(sessions, session)
+		} else {
+			// Create lightweight session object for listing
+			// (don't fully resurrect unless explicitly resumed)
+			session := &Session{
+				ID:           state.SessionID,
+				Name:         state.SessionName,
+				AgentID:      state.AgentID,
+				ProcessPort:  state.ProcessPort,
+				ContextID:    state.ContextID,
+				CreatedAt:    state.CreatedAt,
+				LastActivity: state.LastActivity,
+				Status:       SessionStatus(state.Status),
+				PageIDs:      make([]string, len(state.Pages)),
+			}
+			for i, page := range state.Pages {
+				session.PageIDs[i] = page.PageID
+			}
+			sessions = append(sessions, session)
+		}
+	}
+	
+	return sessions, nil
+}
+
+// RenameSession updates a session's name
+func (m *Manager) RenameSession(sessionID, newName string) error {
+	if sessionID == "" || newName == "" {
+		return fmt.Errorf("session_id and new_name are required")
+	}
+	
+	// Get session
+	session, err := m.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	
+	if session.AgentID == "" {
+		return fmt.Errorf("cannot rename session without agent_id")
+	}
+	
+	oldName := session.Name
+	
+	// Update in Redis
+	if m.repo != nil {
+		if err := m.repo.RenameSession(sessionID, session.AgentID, oldName, newName); err != nil {
+			return fmt.Errorf("failed to rename session in Redis: %w", err)
+		}
+	}
+	
+	// Update in memory
+	session.Name = newName
+	
+	slog.Info("session renamed", 
+		"session_id", sessionID,
+		"old_name", oldName,
+		"new_name", newName)
+	
+	return nil
+}
+
+// GetSessionByName is a convenience wrapper
+func (m *Manager) GetSessionByName(agentID, sessionName string) (*Session, error) {
+	return m.ResumeSessionByName(agentID, sessionName)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/dhruvsoni1802/browser-query-ai/internal/config"
 	"github.com/dhruvsoni1802/browser-query-ai/internal/pool"
 	"github.com/dhruvsoni1802/browser-query-ai/internal/session"
+	"github.com/dhruvsoni1802/browser-query-ai/internal/storage"
 )
 
 func main() {
@@ -30,7 +31,26 @@ func main() {
 		"chromium_path", cfg.ChromiumPath,
 		"server_port", cfg.ServerPort,
 		"max_browsers", cfg.MaxBrowsers,
+		"redis_addr", cfg.RedisAddr,
+		"session_ttl", cfg.SessionTTL,
 	)
+
+	// Create Redis client
+	redisClient, err := storage.NewRedisClient(
+		cfg.RedisAddr,
+		cfg.RedisPassword,
+		cfg.RedisDB,
+	)
+	if err != nil {
+		slog.Error("failed to connect to Redis", "error", err)
+		os.Exit(1)
+	}
+	defer redisClient.Close()
+
+	slog.Info("Redis connected", "addr", cfg.RedisAddr)
+
+	// Create session repository
+	sessionRepo := storage.NewSessionRepository(redisClient, cfg.SessionTTL)
 
 	// Create process pool
 	processPool, err := pool.NewProcessPool(cfg.ChromiumPath, cfg.MaxBrowsers)
@@ -46,11 +66,14 @@ func main() {
 	loadBalancer := pool.NewLoadBalancer(processPool)
 	slog.Info("load balancer initialized")
 
-	// Create session manager
-	manager := session.NewManager()
+	// Create session manager with Redis repository
+	manager := session.NewManager(sessionRepo)
 	defer manager.Close()
 
-	slog.Info("session manager initialized")
+	// Start cleanup worker (check every 5 min, timeout after 30 min)
+	manager.StartCleanupWorker(5*time.Minute, 30*time.Minute)
+
+	slog.Info("session manager initialized with cleanup worker")
 
 	// Create and start HTTP API server
 	apiServer := api.NewServer(cfg.ServerPort, manager, loadBalancer)
@@ -72,6 +95,7 @@ func main() {
 	slog.Info("service ready",
 		"http_port", cfg.ServerPort,
 		"browser_processes", cfg.MaxBrowsers,
+		"redis", cfg.RedisAddr,
 		"status", "press Ctrl+C to shutdown",
 	)
 
@@ -88,7 +112,7 @@ func main() {
 		slog.Error("HTTP server shutdown error", "error", err)
 	}
 
-	// Close session manager
+	// Close session manager (stops cleanup worker)
 	if err := manager.Close(); err != nil {
 		slog.Error("session manager close error", "error", err)
 	}
@@ -96,6 +120,11 @@ func main() {
 	// Shutdown process pool
 	if err := processPool.Shutdown(); err != nil {
 		slog.Error("process pool shutdown error", "error", err)
+	}
+
+	// Close Redis connection
+	if err := redisClient.Close(); err != nil {
+		slog.Error("Redis close error", "error", err)
 	}
 
 	slog.Info("shutdown complete")
