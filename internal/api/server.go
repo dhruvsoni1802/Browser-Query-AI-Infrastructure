@@ -55,6 +55,7 @@ func NewServer(port string, manager *session.Manager, loadBalancer *pool.LoadBal
 			r.Post("/execute", handlers.ExecuteJS)
 			r.Post("/screenshot", handlers.CaptureScreenshot)
 			r.Post("/analyze", handlers.AnalyzePage)
+			r.Post("/accessibility-tree", handlers.GetAccessibilityTree)
 			r.Post("/resume", handlers.ResumeSessionByID)
 			r.Put("/rename", handlers.RenameSession)
 

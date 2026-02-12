@@ -374,6 +374,42 @@ func (h *Handlers) AnalyzePage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// GetAccessibilityTree handles POST /sessions/{id}/accessibility-tree
+func (h *Handlers) GetAccessibilityTree(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "id")
+
+	var req AccessibilityTreeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "Invalid JSON body")
+		return
+	}
+
+	if req.PageID == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "page_id is required")
+		return
+	}
+
+	tree, err := h.sessionManager.GetAccessibilityTree(sessionID, req.PageID)
+	if err != nil {
+		if err.Error() == "failed to get session: session not found: "+sessionID {
+			writeError(w, http.StatusNotFound, ErrCodeSessionNotFound, "Session not found")
+		} else if err.Error() == "page not found in session: "+req.PageID {
+			writeError(w, http.StatusNotFound, ErrCodePageNotFound, "Page not found in session")
+		} else {
+			writeError(w, http.StatusInternalServerError, ErrCodeAccessibilityFailed, err.Error())
+		}
+		return
+	}
+
+	response := AccessibilityTreeResponse{
+		SessionID: sessionID,
+		PageID:    req.PageID,
+		Nodes:     tree.Nodes,
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
 // ListAgentSessions handles GET /agents/{agentId}/sessions
 func (h *Handlers) ListAgentSessions(w http.ResponseWriter, r *http.Request) {
 	agentID := chi.URLParam(r, "agentId")

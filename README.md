@@ -506,3 +506,114 @@ Use the same session_name you used for creating sessions (with or without name) 
 
 
 The session will be resumed and the session data will be loaded from Redis database. However, you won't be able to use the same pages again.
+
+## Analyze Page Structure of a Page in a Session
+
+Extracts a lightweight structural overview of the page — CSS classes, IDs, headings, interactive elements, semantic sections, data attributes, and text snippets. Results are cached per page for the duration of the session.
+
+Request:
+
+```bash
+POST http://{SERVER_URL}/sessions/{id}/analyze
+
+{
+  "page_id": "Any page ID you want to analyze"
+}
+```
+
+Example Request:
+```bash
+POST http://localhost:8080/sessions/sess_-vQvHLElM3w7ox5OXCMBFg==/analyze
+
+{
+    "page_id" : "C0647FFE9A07EF5C52BF53D7BA8920B3"
+}
+```
+
+Response:
+
+```json
+{
+    "session_id": "sess_-vQvHLElM3w7ox5OXCMBFg==",
+    "page_id": "C0647FFE9A07EF5C52BF53D7BA8920B3",
+    "analysis": {
+        "page_id": "C0647FFE9A07EF5C52BF53D7BA8920B3",
+        "url": "https://example.com/",
+        "title": "Example Domain",
+        "structure": {
+            "classes": [],
+            "ids": [],
+            "headings": {
+                "h1": [
+                    "Example Domain"
+                ]
+            },
+            "interactive": {
+                "buttons": [],
+                "links": [
+                    "a (1)"
+                ],
+                "forms": []
+            },
+            "semantic_sections": [],
+            "data_attributes": [],
+            "text_snippets": [
+                "Example Domain",
+                "This domain is for use in documentation examples w"
+            ]
+        }
+    }
+}
+```
+
+Use the session_id returned from the Create session (with or without name) endpoint inside as {id} in the URL.
+
+Note that to get a page_id, you need to navigate to a URL first.
+
+This is useful for AI agents to understand page structure without downloading the full HTML. The result is cached — subsequent calls for the same page return instantly.
+
+## Get Accessibility Tree of a Page in a Session
+
+Retrieves the accessibility tree of the page using the CDP Accessibility.getFullAXTree command. Returns the semantic representation of the page — what screen readers see. No CSS noise, much smaller payload than full HTML.
+
+Request:
+
+```bash
+POST http://{SERVER_URL}/sessions/{id}/accessibility-tree
+
+{
+  "page_id": "Any page ID you want to get the accessibility tree for"
+}
+```
+
+Example Request:
+```bash
+POST http://localhost:8080/sessions/sess_-vQvHLElM3w7ox5OXCMBFg==/accessibility-tree
+
+{
+    "page_id" : "C0647FFE9A07EF5C52BF53D7BA8920B3"
+}
+```
+
+Response:
+
+```json
+{
+    "session_id": "sess_-vQvHLElM3w7ox5OXCMBFg==",
+    "page_id": "C0647FFE9A07EF5C52BF53D7BA8920B3",
+    "nodes": [
+        {
+            "role": "RootWebArea",
+            "name": "Example Domain",
+            "focusable": true,
+            "children": []
+        }
+    ]
+}
+```
+
+Use the session_id returned from the Create session (with or without name) endpoint inside as {id} in the URL.
+
+Note that to get a page_id, you need to navigate to a URL first.
+
+This is useful for AI agents to understand the semantic meaning of a page. The tree contains roles (heading, button, link, etc.), names, heading levels, and focusability — the same information screen readers use.

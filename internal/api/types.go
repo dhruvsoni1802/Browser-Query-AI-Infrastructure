@@ -176,6 +176,18 @@ type AnalyzePageResponse struct {
 	Analysis  *session.PageStructure  `json:"analysis"`
 }
 
+// AccessibilityTreeRequest for POST /sessions/{id}/accessibility-tree
+type AccessibilityTreeRequest struct {
+	PageID string `json:"page_id" validate:"required"`
+}
+
+// AccessibilityTreeResponse returned after retrieving the accessibility tree
+type AccessibilityTreeResponse struct {
+	SessionID string              `json:"session_id"`
+	PageID    string              `json:"page_id"`
+	Nodes     []*session.AXNode   `json:"nodes"`
+}
+
 // Common error codes
 const (
 	ErrCodeSessionNotFound     = "SESSION_NOT_FOUND"
@@ -186,5 +198,6 @@ const (
 	ErrCodeExecutionFailed     = "EXECUTION_FAILED"
 	ErrCodeScreenshotFailed    = "SCREENSHOT_FAILED"
 	ErrCodeAnalysisFailed      = "ANALYSIS_FAILED"
+	ErrCodeAccessibilityFailed = "ACCESSIBILITY_FAILED"
 	ErrCodeInternalError       = "INTERNAL_ERROR"
 )

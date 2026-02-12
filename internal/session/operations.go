@@ -144,6 +144,32 @@ func (m *Manager) InvalidatePageAnalysis(sessionID string, pageID string) error 
 	return nil
 }
 
+// GetAccessibilityTree retrieves the accessibility tree for a page
+func (m *Manager) GetAccessibilityTree(sessionID string, pageID string) (*AccessibilityTree, error) {
+	// Get the session from the manager
+	session, err := m.GetSession(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session: %w", err)
+	}
+
+	// Verify that the page ID is in the session
+	if !slices.Contains(session.PageIDs, pageID) {
+		return nil, fmt.Errorf("page not found in session: %s", pageID)
+	}
+
+	// Get the accessibility tree
+	tree, err := session.GetAccessibilityTree(pageID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get accessibility tree: %w", err)
+	}
+
+	// Update the last activity time of the session
+	session.UpdateActivity()
+
+	// Return the tree
+	return tree, nil
+}
+
 // ClosePage closes a specific page in the session
 func (m *Manager) ClosePage(sessionID string, pageID string) error {
 	// Get the session from the manager
